@@ -1,0 +1,216 @@
+---
+title: "Case Study 2"
+author: "Haichen Liu"
+date: "2015Äê11ÔÂ1ÈÕ"
+output: html_document
+---
+
+##Introduction:
+The purpose of this case study is to use R to explore different on-line job postings for different positions in data science. The point is to harvest job skills from the website Cybercoders, a website where you can browse jobs by location, category or name. Dr. Mcgee used the information from the job website and created some functions to obtain all skills that are mentioned more than twice in the website for data scientists. What I need to do is to combine the skills which have the same meanings and observe the charts I created and find the most important skills.
+
+```{r}
+library(XML)
+library(RCurl)
+
+StopWords = readLines("http://jmlr.csail.mit.edu/papers/volume5/lewis04a/a11-smart-stop-list/english.stop")
+
+asWords = function(txt, stopWords = StopWords, stem = FALSE)
+{
+  words = unlist(strsplit(txt, '[[:space:]!.,;#:()/"]+'))
+  words = words[words != ""]
+  if(stem && require(Rlibstemmer))
+     words = wordStem(words)
+  i = tolower(words) %in% tolower(stopWords)
+  words[!i]
+}
+
+removeStopWords = function(x, stopWords = StopWords)
+     {
+         if(is.character(x))
+             setdiff(x, stopWords)
+         else if(is.list(x))
+             lapply(x, removeStopWords, stopWords)
+         else
+             x
+     }
+
+cy.getFreeFormWords = function(doc, stopWords = StopWords)
+     {
+         nodes = getNodeSet(doc, "//div[@class='job-details']/
+                                 div[@data-section]")
+         if(length(nodes) == 0)
+             nodes = getNodeSet(doc, "//div[@class='job-details']//p")
+         
+         if(length(nodes) == 0)
+             warning("did not find any nodes for the free form text in ",
+                     docName(doc))
+         
+         words = lapply(nodes,
+                        function(x)
+                            strsplit(xmlValue(x),
+                                     "[[:space:][:punct:]]+"))
+         
+         removeStopWords(words, stopWords)
+     }
+```
+
+** Question 1**: Implement the following functions. Use the code we explored to extract the date posted, skill sets and salary and location information from the parsed HTML document.
+
+```{r Question1}
+cy.getSkillList = function(doc)
+{
+  lis = getNodeSet(doc, "//div[@class = 'skills-section']//
+                         li[@class = 'skill-item']//
+                         span[@class = 'skill-name']")
+
+  sapply(lis, xmlValue)
+}
+
+cy.getDatePosted = function(doc)
+  { xmlValue(getNodeSet(doc,
+                     "//div[@class = 'job-details']//
+                        div[@class='posted']/
+                        span/following-sibling::text()")[[1]],
+    trim = TRUE)
+}
+
+cy.getLocationSalary = function(doc)
+{
+  ans = xpathSApply(doc, "//div[@class = 'job-info-main'][1]/div", xmlValue)
+  names(ans) = c("location", "salary")
+  ans
+}
+
+# cy.getSkillList(cydoc)
+# cy.getLocationSalary(cydoc)
+```
+
+The function `cy.ReadPost()` given below reads each job post. This function implements three other functions: `cy.getFreeFormWords()`, `cy.getSkillList()`, and `cy.getLocationSalary()`.
+
+```{r cy.readPost}
+cy.readPost = function(u, stopWords = StopWords, doc = htmlParse(u))
+  {
+    ans = list(words = cy.getFreeFormWords(doc, stopWords),
+         datePosted = cy.getDatePosted(doc),
+         skills = cy.getSkillList(doc))
+    o = cy.getLocationSalary(doc)
+    ans[names(o)] = o
+    ans
+}
+# cyFuns = list(readPost = function(u, stopWords = StopWords, doc=htmlParse(u)))
+```
+**Reading posts programmatically**
+The function `cy.ReadPost()` allows us to read a single post from CyberCoders.com in a very general format. All we need is the URL for the post. Now, let's see about obtaining the URLs using a computer program.
+
+```{r GetPosts}
+# Obtain URLs for job posts
+txt = getForm("http://www.cybercoders.com/search/", searchterms = '"Data Scientist"',
+              searchlocation = "",  newsearch = "true", sorttype = "")
+# Parse the links
+doc = htmlParse(txt, asText = TRUE)
+links = getNodeSet(doc, "//div[@class = 'job-title']/a/@href")
+# Save the links in the vector joblinks
+joblinks <- getRelativeURL(as.character(links), "http://www.cybercoders.com/search/")
+# Read the posts
+#posts <- lapply(joblinks,cy.readPost)
+
+cy.getPostLinks = function(doc, baseURL = "http://www.cybercoders.com/search/")
+  {
+    if(is.character(doc)) doc = htmlParse(doc)
+    links = getNodeSet(doc, "//div[@class = 'job-title']/a/@href")
+    getRelativeURL(as.character(links), baseURL)
+}
+
+cy.readPagePosts = function(doc, links = cy.getPostLinks(doc, baseURL),
+baseURL = "http://www.cybercoders.com/search/")
+  {
+    if(is.character(doc)) doc = htmlParse(doc)
+    lapply(links, cy.readPost)
+ }
+
+## Testing the function with the parsed version of the first page of results in object doc
+posts = cy.readPagePosts(doc)
+sapply(posts,`[[`, "salary")
+summary(sapply(posts, function(x) length(unlist(x$words))))
+```
+
+**Question:** Test the `cy.getFreeFromWords()` function on several different posts.
+
+The following code chunk pulls it all together. The function `cy.getNextPageLink()` retrieves each page from CyberCoders and calls the other functions to parse each post in order to obtain information such as salary, skills, and location.
+
+```{r Next Page of Results}
+# Test of concept
+# getNodeSet(doc, "//a[@rel='next']/@href")[[1]]
+## A function to get all pages
+cy.getNextPageLink = function(doc, baseURL = docName(doc))
+{
+  if(is.na(baseURL))
+     baseURL = "http://www.cybercoders.com/"
+  link = getNodeSet(doc, "//li[@class = 'lnk-next pager-item ']/a/@href")
+  if(length(link) == 0)
+    return(character())
+    link2 <- gsub("./", "search/",link[[1]])
+ getRelativeURL(link2, baseURL)
+}
+
+# Test the above function
+tmp = cy.getNextPageLink(doc, "http://www.cybercoders.com")
+```
+
+Now we have all we need to retrieve all job posts on Cyber Coders for a given search query. The following function puts it all together into a function that we can call with a search string for a job of interest. The function submits the initial query and then reads the posts from each result page.
+```{r cyberCoders}
+cyberCoders =
+function(query)
+{
+   txt = getForm("http://www.cybercoders.com/search/",
+                  searchterms = query,  searchlocation = "",
+                  newsearch = "true",  sorttype = "")
+   doc = htmlParse(txt)
+
+   posts = list()
+   while(TRUE) {
+       posts = c(posts, cy.readPagePosts(doc))
+       nextPage = cy.getNextPageLink(doc)
+       if(length(nextPage) == 0)
+          break
+
+       nextPage = getURLContent(nextPage)
+       doc = htmlParse(nextPage, asText = TRUE)
+   }
+   invisible(posts)
+}
+
+dataSciPosts = cyberCoders("Data Scientist")
+tt = sort(table(unlist(lapply(dataSciPosts, `[[`, "skills"))), decreasing = TRUE)
+tt[tt >= 2]
+```
+
+##Clean up the skills and combine the categories and create the visualization
+```{r}
+skill <- unlist(lapply(dataSciPosts, `[[`, "skills")) 
+skill1 <- tolower(skill) 
+skill2 <- unlist(strsplit(skill1,",|, |;|; |&| & |/| / |/ | or | and | and/or | or/and ")) # skill list clean
+skill2[which(unname(sapply(skill2,pmatch,x="machine learning"))==1)] <- "M. Learning"
+skill2[which(unname(sapply(skill2,pmatch,x="c"))==1)] <- "C"
+skill2[which(unname(sapply(skill2,pmatch,x="r"))==1)] <- "R"
+skill2[which(unname(sapply(skill2,pmatch,x="sql"))==1)] <- "SQL"
+skill2[which(unname(sapply(skill2,pmatch,x="hadoop"))==1)] <- "Hadoop"
+skill2[which(unname(sapply(skill2,pmatch,x="data sc"))==1)] <- "Data Science"
+skill2[which(unname(sapply(skill2,pmatch,x="algor"))==1)] <- "Algorithms"
+skill2[which(unname(sapply(skill2,pmatch,x="big data"))==1)] <- "Big Data"
+skill2[which(unname(sapply(skill2,pmatch,x="predictive an"))==1)] <- "Predictive Ana"
+skill2[which(unname(sapply(skill2,pmatch,x="java"))==1)] <- "Java"
+skill2[which(unname(sapply(skill2,pmatch,x="data-mining"))==1)] <- "Data Mining"
+skill2[which(unname(sapply(skill2,pmatch,x="stat"))==1)] <- "statistics"
+tt = sort(table(skill2), decreasing = TRUE )
+require(wordcloud)
+dotchart(sort(tt[(tt)>=5]),color=1:5, cex = 0.7, main="Skills from Data Scientist Search",)
+wordcloud(names(tt),tt,min.freq = 1,random.order=T,colors=brewer.pal(12, "Paired"),rot.per=0.33)
+
+```
+
+##Conclusion:
+According to the graphs generated by the functions below, we can see that Machine Learning (M.Learning), Python and R are the top three skills that a Data Scientist needs. There should be no surprise that the two different graphs get the same result since they are plotted by using the same data. In addition, it can be easily said that Data Mining, Hadoop and C language are also very important according to the descriptions on cybercoders.com. C language is followed by SQL, Java, Matlab and SAS, which indicates that programming is so important for a data scientist that it occupies half of the top ten. It seems that a data scientist needs to acquire plenty of software programming knowledge and do a lot of coding. No wonder the website is called cybercoder! To sum up, through harvesting Cybercoders website and collecting, we might conclude that companies who are looking for data scientists expect them to be good at machine learning, data mining, statistics and so on. Programming by using softwares such as Python, R, C, Java, Matlab and SAS is extremely likely to be a data scientist's daily work. It will make you more competitive if you are proficient in operating these softwares.
+
+
+Reference: Code taken from Nolan, D. and Temple Lang. Data Science in R: A Case Studies Approach to Computational Reasoning and Problem Solving. CRC Press, 04/2015. VitalBook file.
